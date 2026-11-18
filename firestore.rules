@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- Global Hardened Primitives ----
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isBootstrapAdminUid(uid) {
+      return exists(/databases/$(database)/documents/system/bootstrap) &&
+        get(/databases/$(database)/documents/system/bootstrap).data.adminUid == uid;
+    }
+    function isAdmin() {
+      return isSignedIn() && (
+        isBootstrapAdminUid(request.auth.uid) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // ---- Validation Blueprints ----
+    function isValidBootstrap(data) {
+      return data.keys().hasAll(['adminUid', 'claimedAt'])
+        && data.keys().hasOnly(['adminUid', 'claimedAt'])
+        && isValidId(data.adminUid)
+        && data.claimedAt is timestamp;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'tutDone', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'tutDone', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() <= 200
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.role in ['admin', 'user']
+        && data.tutDone is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSave(data) {
+      return data.keys().hasAll(['userId', 'day', 'state', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'day', 'state', 'updatedAt'])
+        && isValidId(data.userId)
+        && data.day is number && data.day >= 1 && data.day <= 100000
+        && data.state is map && data.state.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLayoutConfig(data) {
+      return data.keys().hasAll(['layout', 'sprites', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['layout', 'sprites', 'updatedBy', 'updatedAt'])
+        && data.layout is map && data.layout.size() <= 150
+        && data.sprites is map && data.sprites.size() <= 150
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    // ---- Collection Rules ----
+
+    // 1) First-registered administrator lock
+    match /system/bootstrap {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidBootstrap(incoming())
+        && !exists(/databases/$(database)/documents/system/bootstrap)
+        && incoming().adminUid == request.auth.uid
+        && incoming().claimedAt == request.time
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      allow update, delete: if false;
+    }
+
+    // 2) Player profiles & RBAC roles (first user is admin, rest are normal users)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isValidId(userId)
+        && isSignedIn()
+        && isOwner(userId)
+        && isValidUser(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          incoming().role == 'user' ||
+          (
+            incoming().role == 'admin'
+            && !exists(/databases/$(database)/documents/system/bootstrap)
+            && getAfter(/databases/$(database)/documents/system/bootstrap).data.adminUid == request.auth.uid
+          )
+        );
+      allow update: if isValidId(userId)
+        && isSignedIn()
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (!isBootstrapAdminUid(userId) || incoming().role == 'admin')
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'displayName', 'tutDone', 'updatedAt'])
+          ) || (
+            isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'tutDone', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin() && !isOwner(userId) && !isBootstrapAdminUid(userId);
+    }
+
+    // 3) Per-player survival cloud save
+    match /saves/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(userId)
+        && isSignedIn()
+        && isOwner(userId)
+        && isValidSave(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isSignedIn()
+        && isValidSave(incoming())
+        && incoming().userId == existing().userId
+        && incoming().updatedAt == request.time
+        && (isOwner(userId) || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['day', 'state', 'updatedAt']);
+      allow delete: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isAdmin());
+    }
+
+    // 4) Admin-managed global bunker visual layout
+    match /config/{docId} {
+      allow get: if isValidId(docId) && isSignedIn() && docId == 'layout';
+      allow list: if false;
+      allow create, update: if isValidId(docId)
+        && docId == 'layout'
+        && isAdmin()
+        && isValidLayoutConfig(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(docId) && docId == 'layout' && isAdmin();
+    }
+  }
+}

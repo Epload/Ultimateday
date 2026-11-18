@@ -1,0 +1,144 @@
+{
+  "entities": {
+    "SystemBootstrap": {
+      "title": "SystemBootstrap",
+      "description": "Singleton bootstrap lock recording the UID of the very first registered administrator user.",
+      "type": "object",
+      "properties": {
+        "adminUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the first registered player who holds full administrator privileges."
+        },
+        "claimedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the bootstrap administrator role was claimed."
+        }
+      },
+      "required": ["adminUid", "claimedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered player account with role assignment (first user is admin, subsequent users are normal players).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200,
+          "description": "Player email address (PII)."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Player display name shown in the bunker HUD and admin roster."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "user"],
+          "description": "Access role: 'admin' (full administration) or 'user' (normal survivor)."
+        },
+        "tutDone": {
+          "type": "boolean",
+          "description": "Whether the player completed or skipped the introductory tutorial."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last profile update."
+        }
+      },
+      "required": ["uid", "email", "displayName", "role", "tutDone", "createdAt", "updatedAt"]
+    },
+    "PlayerSave": {
+      "title": "PlayerSave",
+      "description": "Cloud survival game state for an authenticated player.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "day": {
+          "type": "number",
+          "description": "Current survival day."
+        },
+        "state": {
+          "type": "object",
+          "description": "Structured map of survival stats, equipment, backpack, faults, and bunker state."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last cloud save."
+        }
+      },
+      "required": ["userId", "day", "state", "updatedAt"]
+    },
+    "BunkerLayoutConfig": {
+      "title": "BunkerLayoutConfig",
+      "description": "Global visual layout and sprite overrides published by an administrator.",
+      "type": "object",
+      "properties": {
+        "layout": {
+          "type": "object",
+          "description": "Map of bunker interactive zone coordinates and visual definitions."
+        },
+        "sprites": {
+          "type": "object",
+          "description": "Map of custom sprite metadata overrides."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the administrator who published the layout."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of layout publication."
+        }
+      },
+      "required": ["layout", "sprites", "updatedBy", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/system/bootstrap": {
+      "schema": { "$ref": "#/entities/SystemBootstrap" },
+      "description": "Immutable singleton document recording the first registered user as administrator."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Registered player profiles and RBAC role assignments."
+    },
+    "/saves/{userId}": {
+      "schema": { "$ref": "#/entities/PlayerSave" },
+      "description": "Per-player cloud survival save state."
+    },
+    "/config/layout": {
+      "schema": { "$ref": "#/entities/BunkerLayoutConfig" },
+      "description": "Shared bunker visual layout managed by full administrators."
+    }
+  }
+}
